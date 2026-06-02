@@ -12,23 +12,108 @@ from rdkit.Chem import FilterCatalog
 from rdkit.Chem.FilterCatalog import FilterCatalogParams
 
 # ---------------------------------------------------------------------------
-# Setup: load model, fingerprint generator, substructure catalogs, SA scorer
+# Page config + clinical/scientific styling
 # ---------------------------------------------------------------------------
 
-model = joblib.load("random_forest_model.pkl")
-generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+st.set_page_config(
+    page_title="ADMET Screener",
+    page_icon="🧬",
+    layout="wide",
+)
 
-def make_catalog(filter_type):
-    params = FilterCatalogParams()
-    params.AddCatalog(filter_type)
-    return FilterCatalog.FilterCatalog(params)
+st.markdown(
+    """
+    <style>
+    /* Clinical / scientific palette: deep slate, clinical teal, clean whites */
+    :root {
+        --ink: #1a2b3c;
+        --teal: #0e7c86;
+        --muted: #5b6b7b;
+    }
+    .stApp { background-color: #f7f9fa; }
+    h1, h2, h3 { color: #1a2b3c; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; letter-spacing: -0.01em; }
+    .block-container { padding-top: 2.5rem; max-width: 1100px; }
+    /* Section header band */
+    .section-band {
+        background: linear-gradient(90deg, #0e7c86 0%, #0e7c86 4px, transparent 4px);
+        padding: 0.35rem 0 0.35rem 1rem;
+        margin: 1.6rem 0 0.6rem 0;
+        border-bottom: 1px solid #e3e9ec;
+    }
+    .section-band h3 { margin: 0; font-size: 1.15rem; }
+    .section-sub { color: #5b6b7b; font-size: 0.85rem; margin: 0.1rem 0 0 1rem; }
+    /* Result card */
+    .card {
+        background: #ffffff;
+        border: 1px solid #e3e9ec;
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin-bottom: 0.6rem;
+    }
+    .rule-line { font-size: 0.92rem; padding: 0.1rem 0; }
+    .summary-tag {
+        display: inline-block; font-size: 0.78rem; font-weight: 600;
+        padding: 0.1rem 0.6rem; border-radius: 12px; margin-left: 0.5rem;
+    }
+    .tag-pass { background: #e3f3ef; color: #0e7c86; }
+    .tag-warn { background: #fdeede; color: #b3641a; }
+    .metric-grid { font-size: 0.9rem; color: #1a2b3c; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-pains_catalog = make_catalog(FilterCatalogParams.FilterCatalogs.PAINS)
-brenk_catalog = make_catalog(FilterCatalogParams.FilterCatalogs.BRENK)
+# ---------------------------------------------------------------------------
+# Setup: model, fingerprint generator, substructure catalogs, SA scorer
+# ---------------------------------------------------------------------------
 
-# Synthetic accessibility scorer (ships inside RDKit's Contrib folder)
-sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
-import sascorer
+@st.cache_resource
+def load_resources():
+    model = joblib.load("random_forest_model.pkl")
+    gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
+
+    def make_catalog(filter_type):
+        params = FilterCatalogParams()
+        params.AddCatalog(filter_type)
+        return FilterCatalog.FilterCatalog(params)
+
+    pains = make_catalog(FilterCatalogParams.FilterCatalogs.PAINS)
+    brenk = make_catalog(FilterCatalogParams.FilterCatalogs.BRENK)
+
+    sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
+    import sascorer
+    return model, gen, pains, brenk, sascorer
+
+model, generator, pains_catalog, brenk_catalog, sascorer = load_resources()
+
+# ---------------------------------------------------------------------------
+# Curated molecule library (name -> SMILES), baked in for instant, reliable use
+# ---------------------------------------------------------------------------
+
+MOLECULE_LIBRARY = {
+    # Common over-the-counter / everyday
+    "Caffeine": "CN1C=NC2=C1C(=O)N(C(=O)N2C)C",
+    "Aspirin": "CC(=O)Oc1ccccc1C(=O)O",
+    "Ibuprofen": "CC(C)Cc1ccc(cc1)C(C)C(=O)O",
+    "Paracetamol (Acetaminophen)": "CC(=O)Nc1ccc(O)cc1",
+    "Nicotine": "CN1CCC[C@H]1c1cccnc1",
+    # CNS drugs (good demos for the BBB model)
+    "Diazepam": "CN1C(=O)CN=C(c2ccccc2)c2cc(Cl)ccc21",
+    "Fluoxetine (Prozac)": "CNCCC(Oc1ccc(cc1)C(F)(F)F)c1ccccc1",
+    "Diphenhydramine": "CN(C)CCOC(c1ccccc1)c1ccccc1",
+    "Levodopa": "N[C@@H](Cc1ccc(O)c(O)c1)C(=O)O",
+    "Morphine": "CN1CC[C@]23c4c5ccc(O)c4O[C@H]2[C@@H](O)C=C[C@H]3[C@H]1C5",
+    # Antibiotics / larger molecules (often fail filters)
+    "Penicillin G": "CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)Cc1ccccc1)C(=O)O)C",
+    "Amoxicillin": "CC1([C@@H](N2[C@H](S1)[C@@H](C2=O)NC(=O)[C@H](N)c1ccc(O)cc1)C(=O)O)C",
+    # Deliberate filter-failers / interesting cases
+    "Atorvastatin (Lipitor)": "CC(C)c1c(C(=O)Nc2ccccc2)c(-c2ccccc2)c(-c2ccc(F)cc2)n1CC[C@@H](O)C[C@@H](O)CC(=O)O",
+    "Cholesterol": "CC(C)CCC[C@@H](C)[C@H]1CC[C@H]2[C@@H]3CC=C4C[C@@H](O)CC[C@]4(C)[C@H]3CC[C@]12C",
+    "Glucose": "C([C@@H]1[C@H]([C@@H]([C@H]([C@H](O1)O)O)O)O)O",
+    # Reference / simple
+    "Ethanol": "CCO",
+    "Benzene": "c1ccccc1",
+}
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -50,203 +135,183 @@ def mol_to_fingerprint(mol):
     return arr
 
 def lipinski_breakdown(mol):
-    mw = Descriptors.MolWt(mol)
-    logp = Descriptors.MolLogP(mol)
-    h_donors = Lipinski.NumHDonors(mol)
-    h_acceptors = Lipinski.NumHAcceptors(mol)
+    mw = Descriptors.MolWt(mol); logp = Descriptors.MolLogP(mol)
+    hd = Lipinski.NumHDonors(mol); ha = Lipinski.NumHAcceptors(mol)
     checks = {
-        "Molecular weight <= 500": mw <= 500,
-        "LogP <= 5": logp <= 5,
-        "H-bond donors <= 5": h_donors <= 5,
-        "H-bond acceptors <= 10": h_acceptors <= 10,
+        "Molecular weight ≤ 500": mw <= 500,
+        "LogP ≤ 5": logp <= 5,
+        "H-bond donors ≤ 5": hd <= 5,
+        "H-bond acceptors ≤ 10": ha <= 10,
     }
-    values = {
-        "Molecular weight": round(mw, 1),
-        "LogP": round(logp, 2),
-        "H-bond donors": h_donors,
-        "H-bond acceptors": h_acceptors,
-    }
-    violations = sum(1 for passed in checks.values() if not passed)
-    return values, checks, violations
+    values = {"Molecular weight": round(mw, 1), "LogP": round(logp, 2),
+              "H-bond donors": hd, "H-bond acceptors": ha}
+    return values, checks, sum(1 for p in checks.values() if not p)
 
 def veber_check(mol):
-    rot_bonds = rdMolDescriptors.CalcNumRotatableBonds(mol)
-    tpsa = rdMolDescriptors.CalcTPSA(mol)
-    checks = {
-        "Rotatable bonds <= 10": rot_bonds <= 10,
-        "TPSA <= 140": tpsa <= 140,
-    }
-    values = {
-        "Rotatable bonds": rot_bonds,
-        "TPSA": round(tpsa, 1),
-    }
-    violations = sum(1 for passed in checks.values() if not passed)
-    return values, checks, violations
+    rb = rdMolDescriptors.CalcNumRotatableBonds(mol); tpsa = rdMolDescriptors.CalcTPSA(mol)
+    checks = {"Rotatable bonds ≤ 10": rb <= 10, "TPSA ≤ 140": tpsa <= 140}
+    values = {"Rotatable bonds": rb, "TPSA": round(tpsa, 1)}
+    return values, checks, sum(1 for p in checks.values() if not p)
 
 def ghose_check(mol):
-    mw = Descriptors.MolWt(mol)
-    logp = Descriptors.MolLogP(mol)
-    mr = Descriptors.MolMR(mol)
-    atoms = mol.GetNumAtoms()
+    mw = Descriptors.MolWt(mol); logp = Descriptors.MolLogP(mol)
+    mr = Descriptors.MolMR(mol); atoms = mol.GetNumAtoms()
     checks = {
-        "160 <= MW <= 480": 160 <= mw <= 480,
-        "-0.4 <= LogP <= 5.6": -0.4 <= logp <= 5.6,
-        "40 <= Molar refractivity <= 130": 40 <= mr <= 130,
-        "20 <= atom count <= 70": 20 <= atoms <= 70,
+        "160 ≤ MW ≤ 480": 160 <= mw <= 480,
+        "-0.4 ≤ LogP ≤ 5.6": -0.4 <= logp <= 5.6,
+        "40 ≤ Molar refractivity ≤ 130": 40 <= mr <= 130,
+        "20 ≤ atom count ≤ 70": 20 <= atoms <= 70,
     }
-    violations = sum(1 for passed in checks.values() if not passed)
-    return checks, violations
+    return checks, sum(1 for p in checks.values() if not p)
 
 def qed_score(mol):
     return round(QED.qed(mol), 3)
 
 def substructure_alerts(mol):
-    pains_hits = [entry.GetDescription() for entry in pains_catalog.GetMatches(mol)]
-    brenk_hits = [entry.GetDescription() for entry in brenk_catalog.GetMatches(mol)]
-    return pains_hits, brenk_hits
+    pains = [e.GetDescription() for e in pains_catalog.GetMatches(mol)]
+    brenk = [e.GetDescription() for e in brenk_catalog.GetMatches(mol)]
+    return pains, brenk
 
 def sa_score(mol):
     return round(sascorer.calculateScore(mol), 2)
 
-def rule_summary(violations):
-    """Return a short pass/fail label for a rule set based on violation count."""
+def tag(violations):
     if violations == 0:
-        return "Pass"
-    elif violations == 1:
-        return "1 violation"
-    else:
-        return f"{violations} violations"
+        return '<span class="summary-tag tag-pass">Pass</span>'
+    return f'<span class="summary-tag tag-warn">{violations} violation{"s" if violations > 1 else ""}</span>'
+
+def section(title, subtitle):
+    st.markdown(f'<div class="section-band"><h3>{title}</h3></div>', unsafe_allow_html=True)
+    if subtitle:
+        st.markdown(f'<p class="section-sub">{subtitle}</p>', unsafe_allow_html=True)
+
+def rule_block(title, checks, violations):
+    lines = "".join(
+        f'<div class="rule-line">{"✅" if p else "❌"} {r}</div>' for r, p in checks.items()
+    )
+    st.markdown(
+        f'<div class="card"><b>{title}</b> {tag(violations)}{lines}</div>',
+        unsafe_allow_html=True,
+    )
 
 # ---------------------------------------------------------------------------
-# App layout
+# Header
 # ---------------------------------------------------------------------------
 
-st.title("Molecular ADMET & Drug-Likeness Screener")
-st.write(
-    "Enter a molecule by name (e.g. caffeine) or as a SMILES string. "
-    "The tool screens it across several drug-discovery filters, organised by the "
-    "ADMET framework (Absorption, Distribution, Metabolism, Excretion, Toxicity)."
+st.title("🧬 Molecular ADMET & Drug-Likeness Screener")
+st.markdown(
+    '<p style="color:#5b6b7b; font-size:0.95rem; margin-top:-0.5rem;">'
+    "Screens a molecule across drug-discovery filters, organised by the ADMET framework "
+    "(Absorption, Distribution, Metabolism, Excretion, Toxicity)."
+    "</p>",
+    unsafe_allow_html=True,
 )
 st.caption(
     "Educational project. Not for real medical, clinical, or research decisions. "
-    "Rule-based filters are guidelines, not verdicts, and the ML model is a learned "
-    "estimate, not a measurement."
+    "Rule-based filters are guidelines, not verdicts; the ML model is a learned estimate, not a measurement."
 )
 
-input_mode = st.radio("Input type:", ["Molecule name", "SMILES string"])
+# ---------------------------------------------------------------------------
+# Input
+# ---------------------------------------------------------------------------
 
-if input_mode == "Molecule name":
-    user_input = st.text_input("Molecule name", "caffeine")
+input_mode = st.radio(
+    "Choose how to enter a molecule:",
+    ["Pick from library", "Search by name", "Enter SMILES"],
+    horizontal=True,
+)
+
+smiles = None
+if input_mode == "Pick from library":
+    choice = st.selectbox("Molecule", list(MOLECULE_LIBRARY.keys()))
+    smiles = MOLECULE_LIBRARY[choice]
+elif input_mode == "Search by name":
+    name = st.text_input("Molecule name", "caffeine")
+    pending_name = name
 else:
-    user_input = st.text_input("SMILES string", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C")
+    smiles = st.text_input("SMILES string", "CN1C=NC2=C1C(=O)N(C(=O)N2C)C")
 
-if st.button("Screen molecule"):
-    # Resolve input into a SMILES string
-    if input_mode == "Molecule name":
-        with st.spinner("Looking up molecule..."):
-            smiles = name_to_smiles(user_input)
+go = st.button("Screen molecule", type="primary")
+
+# ---------------------------------------------------------------------------
+# Run screening
+# ---------------------------------------------------------------------------
+
+if go:
+    if input_mode == "Search by name":
+        with st.spinner("Looking up molecule in PubChem..."):
+            smiles = name_to_smiles(pending_name)
         if smiles is None:
-            st.error(f"Could not find a molecule named '{user_input}'. Try another name or use a SMILES string.")
+            st.error(f"Could not find a molecule named '{pending_name}'. Try another name, pick from the library, or enter a SMILES string.")
             st.stop()
-    else:
-        smiles = user_input
 
-    mol = Chem.MolFromSmiles(smiles)
+    mol = Chem.MolFromSmiles(smiles) if smiles else None
     if mol is None:
         st.error("Could not parse that molecule. Please check your input and try again.")
         st.stop()
 
-    # --- Structure ---
-    st.subheader("Structure")
-    img = Draw.MolToImage(mol, size=(350, 350))
-    st.image(img, caption=smiles)
+    # Layout: structure on left, headline metrics on right
+    left, right = st.columns([1, 1.3])
 
-    # =======================================================================
-    # ABSORPTION & DRUG-LIKENESS
-    # =======================================================================
-    st.header("Absorption & Drug-Likeness")
-    st.caption("Whether the molecule has properties typical of orally absorbed drugs.")
+    with left:
+        img = Draw.MolToImage(mol, size=(330, 330))
+        st.image(img, caption=smiles, use_container_width=False)
 
-    lip_values, lip_checks, lip_violations = lipinski_breakdown(mol)
-    veb_values, veb_checks, veb_violations = veber_check(mol)
-    ghose_checks, ghose_violations = ghose_check(mol)
-    qed = qed_score(mol)
+    with right:
+        fp = mol_to_fingerprint(mol).reshape(1, -1)
+        prediction = model.predict(fp)[0]
+        probability = model.predict_proba(fp)[0, 1]
+        qed = qed_score(mol)
+        sa = sa_score(mol)
 
-    st.markdown(f"**Lipinski's Rule of Five** — {rule_summary(lip_violations)}")
-    for rule, passed in lip_checks.items():
-        st.write(f"{'✅' if passed else '❌'} {rule}")
+        st.markdown("##### At a glance")
+        m1, m2 = st.columns(2)
+        m1.metric("QED drug-likeness", f"{qed}", help="0 = poor, 1 = excellent")
+        m2.metric("Synthetic accessibility", f"{sa}", help="1 = easy, 10 = very hard")
+        if prediction == 1:
+            st.success(f"BBB penetration: likely ({probability:.0%} confidence)")
+        else:
+            st.warning(f"BBB penetration: unlikely ({1 - probability:.0%} confidence)")
 
-    st.markdown(f"**Veber's Rules** — {rule_summary(veb_violations)}")
-    for rule, passed in veb_checks.items():
-        st.write(f"{'✅' if passed else '❌'} {rule}")
+    # === ABSORPTION ===
+    section("Absorption & Drug-Likeness", "Properties typical of orally absorbed drugs.")
+    lip_v, lip_c, lip_n = lipinski_breakdown(mol)
+    veb_v, veb_c, veb_n = veber_check(mol)
+    gho_c, gho_n = ghose_check(mol)
+    rule_block("Lipinski's Rule of Five", lip_c, lip_n)
+    rule_block("Veber's Rules", veb_c, veb_n)
+    rule_block("Ghose Filter", gho_c, gho_n)
+    with st.expander("Computed property values"):
+        for k, v in {**lip_v, **veb_v}.items():
+            st.write(f"**{k}:** {v}")
 
-    st.markdown(f"**Ghose Filter** — {rule_summary(ghose_violations)}")
-    for rule, passed in ghose_checks.items():
-        st.write(f"{'✅' if passed else '❌'} {rule}")
-
-    st.markdown(f"**QED (Quantitative Estimate of Drug-likeness):** {qed}  _(0 = poor, 1 = excellent)_")
-
-    with st.expander("See computed property values"):
-        all_values = {**lip_values, **veb_values}
-        for prop, val in all_values.items():
-            st.write(f"**{prop}:** {val}")
-
-    # =======================================================================
-    # DISTRIBUTION
-    # =======================================================================
-    st.header("Distribution")
-    st.caption("Where the molecule travels in the body. Here: blood-brain barrier penetration (ML model).")
-
-    fp = mol_to_fingerprint(mol).reshape(1, -1)
-    prediction = model.predict(fp)[0]
-    probability = model.predict_proba(fp)[0, 1]
-
+    # === DISTRIBUTION ===
+    section("Distribution", "Where the molecule travels. Here: blood-brain barrier penetration (ML model).")
     if prediction == 1:
         st.success(f"Likely to penetrate the blood-brain barrier (confidence: {probability:.0%})")
     else:
         st.warning(f"Unlikely to penetrate the blood-brain barrier (confidence: {1 - probability:.0%})")
     st.caption("Random Forest trained on the MoleculeNet BBBP dataset (~90% accuracy). An estimate, not a measurement.")
 
-    # =======================================================================
-    # METABOLISM & EXCRETION
-    # =======================================================================
-    st.header("Metabolism & Excretion")
+    # === METABOLISM & EXCRETION ===
+    section("Metabolism & Excretion", "")
     st.info(
         "Not yet implemented. A full ADMET tool would predict metabolic stability "
-        "(e.g. cytochrome P450 interactions) and clearance/half-life here, which "
-        "would require additional trained models. Noted explicitly rather than left "
-        "silently blank."
+        "(e.g. cytochrome P450 interactions) and clearance/half-life here, which would "
+        "require additional trained models. Noted explicitly rather than left silently blank."
     )
 
-    # =======================================================================
-    # TOXICITY & STRUCTURAL ALERTS
-    # =======================================================================
-    st.header("Toxicity & Structural Alerts")
-    st.caption("Substructure-based flags for problematic or reactive groups. These are warnings, not toxicity predictions.")
-
+    # === TOXICITY ===
+    section("Toxicity & Structural Alerts", "Substructure flags for problematic or reactive groups. Warnings, not toxicity predictions.")
     pains_hits, brenk_hits = substructure_alerts(mol)
-
-    if not pains_hits:
-        st.write("✅ PAINS (assay-interference substructures): none found")
-    else:
-        st.write(f"⚠️ PAINS alerts: {', '.join(pains_hits)}")
-
-    if not brenk_hits:
-        st.write("✅ Brenk (reactive/toxic substructures): none found")
-    else:
-        st.write(f"⚠️ Brenk alerts: {', '.join(brenk_hits)}")
-
+    pains_line = "✅ PAINS (assay-interference): none found" if not pains_hits else f"⚠️ PAINS alerts: {', '.join(pains_hits)}"
+    brenk_line = "✅ Brenk (reactive/toxic): none found" if not brenk_hits else f"⚠️ Brenk alerts: {', '.join(brenk_hits)}"
+    st.markdown(f'<div class="card"><div class="rule-line">{pains_line}</div><div class="rule-line">{brenk_line}</div></div>', unsafe_allow_html=True)
     st.caption(
-        "A clean result does not guarantee safety; a flagged result does not guarantee "
-        "toxicity. Validated toxicity prediction would need models trained on data such "
-        "as Tox21 or ClinTox."
+        "A clean result does not guarantee safety; a flag does not guarantee toxicity. "
+        "Validated toxicity prediction would need models trained on data such as Tox21 or ClinTox."
     )
 
-    # =======================================================================
-    # SYNTHESIZABILITY (outside ADMET)
-    # =======================================================================
-    st.header("Synthesizability")
-    st.caption("How hard the molecule would likely be to make in a lab. Sits outside ADMET but matters for real drug development.")
-
-    sa = sa_score(mol)
-    st.markdown(f"**Synthetic Accessibility (SA) score:** {sa}  _(1 = easy to synthesise, 10 = very difficult)_")
+    # === SYNTHESIZABILITY ===
+    section("Synthesizability", "How hard the molecule would likely be to make. Outside ADMET, but matters in practice.")
+    st.markdown(f'<div class="card"><b>Synthetic Accessibility (SA) score:</b> {sa} <span style="color:#5b6b7b;">(1 = easy, 10 = very difficult)</span></div>', unsafe_allow_html=True)
