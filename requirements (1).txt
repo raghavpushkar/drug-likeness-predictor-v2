@@ -1,0 +1,7 @@
+streamlit
+rdkit
+scikit-learn
+numpy
+joblib
+pubchempy
+pillow
