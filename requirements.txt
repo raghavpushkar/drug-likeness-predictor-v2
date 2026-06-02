@@ -4,4 +4,4 @@ scikit-learn
 numpy
 joblib
 pubchempy
-pillow
+pillow>=10.0.0
