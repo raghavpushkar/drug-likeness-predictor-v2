@@ -70,6 +70,7 @@ st.markdown(
 @st.cache_resource
 def load_resources():
     model = joblib.load("random_forest_model.pkl")
+    cyp_model = joblib.load("cyp2d6_model.pkl")
     gen = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=2048)
 
     def make_catalog(filter_type):
@@ -82,9 +83,9 @@ def load_resources():
 
     sys.path.append(os.path.join(RDConfig.RDContribDir, 'SA_Score'))
     import sascorer
-    return model, gen, pains, brenk, sascorer
+    return model, cyp_model, gen, pains, brenk, sascorer
 
-model, generator, pains_catalog, brenk_catalog, sascorer = load_resources()
+model, cyp_model, generator, pains_catalog, brenk_catalog, sascorer = load_resources()
 
 # ---------------------------------------------------------------------------
 # Curated molecule library (name -> SMILES), baked in for instant, reliable use
@@ -272,6 +273,11 @@ if go:
             st.success(f"BBB penetration: likely ({probability:.0%} confidence)")
         else:
             st.warning(f"BBB penetration: unlikely ({1 - probability:.0%} confidence)")
+        cyp_glance = cyp_model.predict(fp)[0]
+        if cyp_glance == 1:
+            st.warning("CYP2D6: predicted inhibitor")
+        else:
+            st.success("CYP2D6: predicted non-inhibitor")
 
     # === ABSORPTION ===
     section("Absorption & Drug-Likeness", "Properties typical of orally absorbed drugs.")
@@ -294,11 +300,28 @@ if go:
     st.caption("Random Forest trained on the MoleculeNet BBBP dataset (~90% accuracy). An estimate, not a measurement.")
 
     # === METABOLISM & EXCRETION ===
-    section("Metabolism & Excretion", "")
+    section("Metabolism", "How the molecule is broken down. Here: CYP2D6 enzyme inhibition (ML model).")
+    cyp_pred = cyp_model.predict(fp)[0]
+    cyp_prob = cyp_model.predict_proba(fp)[0, 1]
+    if cyp_pred == 1:
+        st.warning(f"Predicted CYP2D6 inhibitor (confidence: {cyp_prob:.0%})")
+    else:
+        st.success(f"Predicted non-inhibitor of CYP2D6 (confidence: {1 - cyp_prob:.0%})")
+    st.caption(
+        "Random Forest trained on the TDC CYP2D6 (Veith) dataset, AUC ≈ 0.86. "
+        "CYP2D6 is one of several drug-metabolising enzymes; this is a screening flag for "
+        "one enzyme, not a full metabolism profile. The model leans conservative (catches "
+        "~63% of true inhibitors), so a 'non-inhibitor' result is weaker evidence than an "
+        "'inhibitor' one."
+    )
+
+    section("Excretion", "")
     st.info(
-        "Not yet implemented. A full ADMET tool would predict metabolic stability "
-        "(e.g. cytochrome P450 interactions) and clearance/half-life here, which would "
-        "require additional trained models. Noted explicitly rather than left silently blank."
+        "Not implemented. A clearance/half-life regression model was attempted on the TDC "
+        "hepatocyte clearance dataset (~1,200 compounds) but achieved R² ≈ 0.06, i.e. no real "
+        "predictive power. Clearance is very hard to predict from structure alone on small public "
+        "data, so no model is shipped here rather than displaying a misleading number. See the "
+        "project's limitations for details."
     )
 
     # === TOXICITY ===
