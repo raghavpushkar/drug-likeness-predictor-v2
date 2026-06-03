@@ -1,7 +1,7 @@
 streamlit
 rdkit
 scikit-learn==1.2.2
-numpy
+numpy==1.26.4
 joblib
 pubchempy
 pillow>=10.0.0
