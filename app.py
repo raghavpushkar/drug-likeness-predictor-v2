@@ -24,28 +24,23 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    /* Clinical / scientific palette: deep slate, clinical teal, clean whites */
-    :root {
-        --ink: #1a2b3c;
-        --teal: #0e7c86;
-        --muted: #5b6b7b;
-    }
-    .stApp { background-color: #f7f9fa; }
-    h1, h2, h3 { color: #1a2b3c; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; letter-spacing: -0.01em; }
+    /* Theme-adaptive: uses Streamlit's own theme variables so it works in
+       both light and dark mode instead of hardcoding light colours. */
+    h1, h2, h3 { letter-spacing: -0.01em; }
     .block-container { padding-top: 2.5rem; max-width: 1100px; }
-    /* Section header band */
+    /* Section header band with a teal accent rule on the left */
     .section-band {
-        background: linear-gradient(90deg, #0e7c86 0%, #0e7c86 4px, transparent 4px);
+        border-left: 4px solid #14a3b0;
         padding: 0.35rem 0 0.35rem 1rem;
         margin: 1.6rem 0 0.6rem 0;
-        border-bottom: 1px solid #e3e9ec;
+        border-bottom: 1px solid rgba(128,128,128,0.25);
     }
     .section-band h3 { margin: 0; font-size: 1.15rem; }
-    .section-sub { color: #5b6b7b; font-size: 0.85rem; margin: 0.1rem 0 0 1rem; }
-    /* Result card */
+    .section-sub { opacity: 0.7; font-size: 0.85rem; margin: 0.1rem 0 0 1rem; }
+    /* Result card: semi-transparent so it adapts to light/dark backgrounds */
     .card {
-        background: #ffffff;
-        border: 1px solid #e3e9ec;
+        background: rgba(128,128,128,0.06);
+        border: 1px solid rgba(128,128,128,0.25);
         border-radius: 8px;
         padding: 1rem 1.2rem;
         margin-bottom: 0.6rem;
@@ -55,9 +50,14 @@ st.markdown(
         display: inline-block; font-size: 0.78rem; font-weight: 600;
         padding: 0.1rem 0.6rem; border-radius: 12px; margin-left: 0.5rem;
     }
-    .tag-pass { background: #e3f3ef; color: #0e7c86; }
-    .tag-warn { background: #fdeede; color: #b3641a; }
-    .metric-grid { font-size: 0.9rem; color: #1a2b3c; }
+    .tag-pass { background: rgba(20,163,176,0.18); color: #14a3b0; }
+    .tag-warn { background: rgba(200,120,30,0.18); color: #c8781e; }
+    /* Identity panel for names + SMILES */
+    .id-panel { background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.25);
+                border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.6rem; font-size: 0.9rem; }
+    .id-label { opacity: 0.6; font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; }
+    .id-value { margin-bottom: 0.5rem; word-break: break-word; }
+    .id-smiles { font-family: monospace; font-size: 0.82rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -128,6 +128,26 @@ def name_to_smiles(name):
         return None
     except Exception:
         return None
+
+def fetch_names(smiles, known_common=None):
+    """Return (common_name, iupac_name) for a SMILES via PubChem.
+    known_common is used as a fallback/primary if we already have a name.
+    Never raises; returns what it can, omitting the rest."""
+    common = known_common
+    iupac = None
+    try:
+        results = pcp.get_compounds(smiles, "smiles")
+        if results:
+            c = results[0]
+            iupac = c.iupac_name
+            if not common:
+                # synonyms[0] is usually the most common name
+                syns = c.synonyms
+                if syns:
+                    common = syns[0]
+    except Exception:
+        pass
+    return common, iupac
 
 def mol_to_fingerprint(mol):
     fp = generator.GetFingerprint(mol)
@@ -223,9 +243,11 @@ input_mode = st.radio(
 )
 
 smiles = None
+known_common_name = None
 if input_mode == "Pick from library":
     choice = st.selectbox("Molecule", list(MOLECULE_LIBRARY.keys()))
     smiles = MOLECULE_LIBRARY[choice]
+    known_common_name = choice
 elif input_mode == "Search by name":
     name = st.text_input("Molecule name", "caffeine")
     pending_name = name
@@ -245,6 +267,7 @@ if go:
         if smiles is None:
             st.error(f"Could not find a molecule named '{pending_name}'. Try another name, pick from the library, or enter a SMILES string.")
             st.stop()
+        known_common_name = pending_name
 
     mol = Chem.MolFromSmiles(smiles) if smiles else None
     if mol is None:
@@ -256,7 +279,7 @@ if go:
 
     with left:
         img = Draw.MolToImage(mol, size=(330, 330))
-        st.image(img, caption=smiles, use_container_width=False)
+        st.image(img, use_container_width=False)
 
     with right:
         fp = mol_to_fingerprint(mol).reshape(1, -1)
@@ -264,6 +287,19 @@ if go:
         probability = model.predict_proba(fp)[0, 1]
         qed = qed_score(mol)
         sa = sa_score(mol)
+
+        # Identity panel: names + SMILES
+        with st.spinner("Fetching molecule identity..."):
+            common_name, iupac_name = fetch_names(smiles, known_common_name)
+        id_html = '<div class="id-panel">'
+        id_html += '<div class="id-label">Common name</div>'
+        id_html += f'<div class="id-value">{common_name if common_name else "—"}</div>'
+        id_html += '<div class="id-label">Chemical (IUPAC) name</div>'
+        id_html += f'<div class="id-value">{iupac_name if iupac_name else "—"}</div>'
+        id_html += '<div class="id-label">SMILES</div>'
+        id_html += f'<div class="id-value id-smiles">{smiles}</div>'
+        id_html += '</div>'
+        st.markdown(id_html, unsafe_allow_html=True)
 
         st.markdown("##### At a glance")
         m1, m2 = st.columns(2)
