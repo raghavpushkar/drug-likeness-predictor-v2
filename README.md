@@ -4,6 +4,8 @@ A web app that evaluates whether a molecule has the properties of a viable drug.
 
 It combines trained machine learning models with rule-based cheminformatics checks, and is deliberate about stating what it can and cannot do.
 
+**Live app:** https://predictor-v2.streamlit.app/
+
 **Built with:** Python, RDKit, scikit-learn, Streamlit, PyTDC
 
 ---
@@ -145,6 +147,12 @@ A note on `packages.txt`: RDKit's molecule drawing depends on system graphics li
 ---
 
 ## How to Run It
+
+### Live version
+
+The app is deployed on Streamlit Community Cloud: **https://predictor-v2.streamlit.app/**
+
+(Free Streamlit apps sleep after a period of inactivity and wake up a few seconds after the link is opened.)
 
 ### Run locally
 
